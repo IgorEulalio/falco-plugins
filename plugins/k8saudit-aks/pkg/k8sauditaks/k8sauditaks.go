@@ -42,7 +42,7 @@ type PluginConfig struct {
 
 func (k *Plugin) Info() *plugins.Info {
 	return &plugins.Info{
-		ID:          10,
+		ID:          21,
 		Name:        pluginName,
 		Description: "Read Kubernetes Audit Events for AKS from EventHub and use blob storage as checkpoint store",
 		Contact:     "github.com/falcosecurity/plugins",
@@ -122,8 +122,9 @@ func (p *Plugin) OpenParams() ([]sdk.OpenParam, error) {
 	}, nil
 }
 
-func (p *Plugin) Open() (source.Instance, error) {
+func (p *Plugin) Open(_ string) (source.Instance, error) {
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	checkClient, err := container.NewClientFromConnectionString(p.Config.BlobStorageConnectionString, p.Config.BlobStorageContainerName, nil)
 	if err != nil {
 		return nil, err
