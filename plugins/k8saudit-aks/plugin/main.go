@@ -21,12 +21,12 @@ import (
 	"github.com/falcosecurity/plugin-sdk-go/pkg/sdk/plugins"
 	"github.com/falcosecurity/plugin-sdk-go/pkg/sdk/plugins/extractor"
 	"github.com/falcosecurity/plugin-sdk-go/pkg/sdk/plugins/source"
-	"github.com/falcosecurity/plugins/plugins/k8saudit-eks/pkg/k8sauditeks"
+	"github.com/falcosecurity/plugins/plugins/k8saudit-aks/pkg/k8sauditaks"
 )
 
 func init() {
 	plugins.SetFactory(func() plugins.Plugin {
-		p := &k8sauditeks.Plugin{}
+		p := &k8sauditaks.Plugin{}
 		source.Register(p)
 		extractor.Register(p)
 		return p

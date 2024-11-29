@@ -42,7 +42,7 @@ type PluginConfig struct {
 
 func (k *Plugin) Info() *plugins.Info {
 	return &plugins.Info{
-		ID:          10,
+		ID:          21,
 		Name:        pluginName,
 		Description: "Read Kubernetes Audit Events for AKS from EventHub and use blob storage as checkpoint store",
 		Contact:     "github.com/falcosecurity/plugins",
