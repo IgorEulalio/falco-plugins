@@ -122,7 +122,7 @@ func (p *Plugin) OpenParams() ([]sdk.OpenParam, error) {
 	}, nil
 }
 
-func (p *Plugin) Open() (source.Instance, error) {
+func (p *Plugin) Open(params string) (source.Instance, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	checkClient, err := container.NewClientFromConnectionString(p.Config.BlobStorageConnectionString, p.Config.BlobStorageContainerName, nil)
 	if err != nil {
