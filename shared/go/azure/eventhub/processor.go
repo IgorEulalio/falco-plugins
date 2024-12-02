@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azeventhubs"
@@ -49,10 +50,12 @@ func (p *Processor) Process(
 				ctx := context.Background()
 				err := p.RateLimiter.Wait(ctx)
 				if err != nil {
-					// Handle the error (e.g., log it and continue)
+					fmt.Printf("Error ocurred while waiting for rate limiter: %v\n", err)
 					continue
 				}
+				fmt.Printf("Received record: %v\n", record)
 				recordChan <- record
+				fmt.Printf("Sent record: %v\n", record)
 			}
 
 			if err := partitionClient.UpdateCheckpoint(context.TODO(), event, nil); err != nil {

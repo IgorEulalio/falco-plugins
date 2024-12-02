@@ -3,6 +3,7 @@ package k8sauditaks
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"regexp"
@@ -124,13 +125,15 @@ func (p *Plugin) OpenParams() ([]sdk.OpenParam, error) {
 
 func (p *Plugin) Open(_ string) (source.Instance, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+
 	checkClient, err := container.NewClientFromConnectionString(p.Config.BlobStorageConnectionString, p.Config.BlobStorageContainerName, nil)
 	if err != nil {
+		p.Logger.Printf("error opening connection to blob storage: %v", err)
 		return nil, err
 	}
 	checkpointStore, err := checkpoints.NewBlobStore(checkClient, nil)
 	if err != nil {
+		p.Logger.Printf("error opening blob checkpoint connection: %v", err)
 		return nil, err
 	}
 	consumerClient, err := azeventhubs.NewConsumerClientFromConnectionString(
@@ -140,12 +143,15 @@ func (p *Plugin) Open(_ string) (source.Instance, error) {
 		nil,
 	)
 	if err != nil {
+		p.Logger.Printf("error creating consumer client: %v", err)
 		return nil, err
 	}
-	defer consumerClient.Close(ctx)
+	// Do not defer closing the consumerClient here
+
 	processor, err := azeventhubs.NewProcessor(consumerClient, checkpointStore, nil)
 	if err != nil {
-		panic(err)
+		p.Logger.Printf("error creating eventhub processor: %v", err)
+		return nil, err
 	}
 
 	rateLimiter := rate.NewLimiter(rate.Limit(p.Config.RateLimitEventsPerSecond), p.Config.RateLimitBurst)
@@ -153,29 +159,37 @@ func (p *Plugin) Open(_ string) (source.Instance, error) {
 	falcoEventHubProcessor := falcoeventhub.Processor{
 		RateLimiter: rateLimiter,
 	}
+
+	fmt.Println("Plugin initialization complete.")
+
 	eventsC := make(chan falcoeventhub.Record)
 	pushEventC := make(chan source.PushEvent)
 
+	// Start processing partition clients
 	go func() {
 		for {
-			partitionClient := processor.NextPartitionClient(context.TODO())
-
+			partitionClient := processor.NextPartitionClient(ctx)
 			if partitionClient == nil {
 				break
 			}
-
-			go func() {
-				if err := falcoEventHubProcessor.Process(partitionClient, eventsC); err != nil {
-					panic(err)
+			// Capture the partitionClient variable
+			go func(pc *azeventhubs.ProcessorPartitionClient) {
+				//defer pc.Close(ctx)
+				if err := falcoEventHubProcessor.Process(pc, eventsC); err != nil {
+					p.Logger.Printf("error processing partition client: %v", err)
 				}
-			}()
+			}(partitionClient)
 		}
 	}()
 
+	// Process events and send to pushEventC
 	go func() {
 		for {
 			select {
-			case i := <-eventsC:
+			case i, ok := <-eventsC:
+				if !ok {
+					return
+				}
 				values, err := p.Plugin.ParseAuditEventsPayload([]byte(i.Properties.Log))
 				if err != nil {
 					p.Logger.Println(err)
@@ -186,14 +200,20 @@ func (p *Plugin) Open(_ string) (source.Instance, error) {
 						p.Logger.Println(j.Err)
 						continue
 					}
-					pushEventC <- *j
+					select {
+					case pushEventC <- *j:
+					case <-ctx.Done():
+						return
+					}
 				}
 			case <-ctx.Done():
 				p.Logger.Println("context done")
+				return
 			}
 		}
 	}()
 
+	// Run the processor
 	go func() {
 		if err := processor.Run(ctx); err != nil {
 			p.Logger.Printf("error running processor: %v", err)
@@ -202,6 +222,14 @@ func (p *Plugin) Open(_ string) (source.Instance, error) {
 
 	return source.NewPushInstance(
 		pushEventC,
-		source.WithInstanceClose(cancel),
+		source.WithInstanceClose(func() {
+			cancel()
+			// Close consumerClient when the context is canceled
+			if err := consumerClient.Close(context.Background()); err != nil {
+				p.Logger.Printf("error closing consumer client: %v", err)
+			}
+			// Close pushEventC to signal no more events
+			close(pushEventC)
+		}),
 	)
 }

@@ -34,3 +34,10 @@ $(OUTPUT): clean
 
 readme:
 	@$(READMETOOL) -p ./$(OUTPUT) -f README.md
+
+copy: all
+	@cp ./$(OUTPUT) /usr/share/falco/plugins/
+	@cp falco.yaml /etc/falco/falco.yaml
+
+run-falco: copy
+	@falco -c /etc/falco/falco.yaml
