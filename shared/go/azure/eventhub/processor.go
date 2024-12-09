@@ -32,10 +32,13 @@ func (p *Processor) Process(
 	defer closePartitionResources(partitionClient)
 
 	for {
-		receiveCtx, receiveCtxCancel := context.WithTimeout(context.TODO(), time.Minute)
-		events, err := partitionClient.ReceiveEvents(receiveCtx, 100, nil)
-		receiveCtxCancel()
+		ctx := context.Background()
 
+		receiveCtx, receiveCtxCancel := context.WithTimeout(ctx, time.Minute)
+		fmt.Printf("Receiving events on partitionId %v\n", partitionClient.PartitionID())
+		events, err := partitionClient.ReceiveEvents(receiveCtx, 100, nil)
+		fmt.Printf("Received %d events on partitionId %v\n", len(events), partitionClient.PartitionID())
+		receiveCtxCancel()
 		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
 			return err
 		}
@@ -45,22 +48,19 @@ func (p *Processor) Process(
 			if err != nil {
 				return err
 			}
-
 			for _, record := range eventData.Records {
 				ctx := context.Background()
 				err := p.RateLimiter.Wait(ctx)
 				if err != nil {
-					fmt.Printf("Error ocurred while waiting for rate limiter: %v\n", err)
 					continue
 				}
-				fmt.Printf("Received record: %v\n", record)
 				recordChan <- record
-				fmt.Printf("Sent record: %v\n", record)
 			}
 
-			if err := partitionClient.UpdateCheckpoint(context.TODO(), event, nil); err != nil {
+			if err := partitionClient.UpdateCheckpoint(ctx, event, nil); err != nil {
 				return err
 			}
+			fmt.Printf("Updated checkpoint for partitionId %v\n", partitionClient.PartitionID())
 		}
 	}
 }

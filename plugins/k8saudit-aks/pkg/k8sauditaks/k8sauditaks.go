@@ -3,7 +3,6 @@ package k8sauditaks
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"os"
 	"regexp"
@@ -41,7 +40,7 @@ type PluginConfig struct {
 	RateLimitBurst                    int    `json:"rate_limit_burst" jsonschema:"title=rate_limit_burst,description=The rate limit burst of events to read from EventHub"`
 }
 
-func (k *Plugin) Info() *plugins.Info {
+func (p *Plugin) Info() *plugins.Info {
 	return &plugins.Info{
 		ID:          21,
 		Name:        pluginName,
@@ -72,6 +71,8 @@ func (p *PluginConfig) Reset() {
 			return
 		}
 		p.RateLimitEventsPerSecond = rateLimitEventsPerSecond
+	} else {
+		p.RateLimitEventsPerSecond = 100
 	}
 	if i := os.Getenv("RATE_LIMIT_BURST"); i != "" {
 		rateLimitBurst, err := strconv.Atoi(i)
@@ -79,15 +80,17 @@ func (p *PluginConfig) Reset() {
 			return
 		}
 		p.RateLimitBurst = rateLimitBurst
+	} else {
+		p.RateLimitBurst = 200
 	}
 }
 
-func (k *Plugin) Init(cfg string) error {
+func (p *Plugin) Init(cfg string) error {
 	// read configuration
-	k.Plugin.Config.Reset()
-	k.Config.Reset()
+	p.Plugin.Config.Reset()
+	p.Config.Reset()
 
-	err := json.Unmarshal([]byte(cfg), &k.Config)
+	err := json.Unmarshal([]byte(cfg), &p.Config)
 	if err != nil {
 		return err
 	}
@@ -97,7 +100,7 @@ func (k *Plugin) Init(cfg string) error {
 		return err
 	}
 
-	k.Logger = log.New(os.Stderr, "["+pluginName+"] ", log.LstdFlags|log.LUTC|log.Lmsgprefix)
+	p.Logger = log.New(os.Stderr, "["+pluginName+"] ", log.LstdFlags|log.LUTC|log.Lmsgprefix)
 
 	return nil
 }
@@ -124,24 +127,27 @@ func (p *Plugin) OpenParams() ([]sdk.OpenParam, error) {
 }
 
 func (p *Plugin) Open(_ string) (source.Instance, error) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, _ := context.WithCancel(context.Background())
 
 	checkClient, err := container.NewClientFromConnectionString(p.Config.BlobStorageConnectionString, p.Config.BlobStorageContainerName, nil)
 	if err != nil {
 		p.Logger.Printf("error opening connection to blob storage: %v", err)
 		return nil, err
 	}
+	p.Logger.Printf("opened connection to blob storage")
 	checkpointStore, err := checkpoints.NewBlobStore(checkClient, nil)
 	if err != nil {
 		p.Logger.Printf("error opening blob checkpoint connection: %v", err)
 		return nil, err
 	}
+	p.Logger.Printf("opened blob checkpoint connection")
 	consumerClient, err := azeventhubs.NewConsumerClientFromConnectionString(
 		p.Config.EventHubNamespaceConnectionString,
 		p.Config.EventHubName,
 		azeventhubs.DefaultConsumerGroup,
 		nil,
 	)
+	p.Logger.Printf("opened consumer client")
 	if err != nil {
 		p.Logger.Printf("error creating consumer client: %v", err)
 		return nil, err
@@ -160,25 +166,22 @@ func (p *Plugin) Open(_ string) (source.Instance, error) {
 		RateLimiter: rateLimiter,
 	}
 
-	fmt.Println("Plugin initialization complete.")
+	p.Logger.Printf("created eventhub processor")
 
 	eventsC := make(chan falcoeventhub.Record)
 	pushEventC := make(chan source.PushEvent)
 
-	// Start processing partition clients
 	go func() {
 		for {
-			partitionClient := processor.NextPartitionClient(ctx)
+			partitionClient := processor.NextPartitionClient(context.Background())
 			if partitionClient == nil {
 				break
 			}
-			// Capture the partitionClient variable
-			go func(pc *azeventhubs.ProcessorPartitionClient) {
-				//defer pc.Close(ctx)
-				if err := falcoEventHubProcessor.Process(pc, eventsC); err != nil {
+			go func(pc *azeventhubs.ProcessorPartitionClient, ec chan<- falcoeventhub.Record) {
+				if err := falcoEventHubProcessor.Process(partitionClient, eventsC); err != nil {
 					p.Logger.Printf("error processing partition client: %v", err)
 				}
-			}(partitionClient)
+			}(partitionClient, eventsC)
 		}
 	}()
 
@@ -200,14 +203,10 @@ func (p *Plugin) Open(_ string) (source.Instance, error) {
 						p.Logger.Println(j.Err)
 						continue
 					}
-					select {
-					case pushEventC <- *j:
-					case <-ctx.Done():
-						return
-					}
+					pushEventC <- *j
 				}
 			case <-ctx.Done():
-				p.Logger.Println("context done")
+				p.Logger.Println("context done in eventsC")
 				return
 			}
 		}
@@ -223,7 +222,6 @@ func (p *Plugin) Open(_ string) (source.Instance, error) {
 	return source.NewPushInstance(
 		pushEventC,
 		source.WithInstanceClose(func() {
-			cancel()
 			// Close consumerClient when the context is canceled
 			if err := consumerClient.Close(context.Background()); err != nil {
 				p.Logger.Printf("error closing consumer client: %v", err)
